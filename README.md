@@ -66,6 +66,7 @@ func (f *FSM) Apply(log *raft.Log) interface{} {
     f.messageLog[msg.Subject] = append(f.messageLog[msg.Subject], msg)
     return nil
 }
+```
 
 ### Phase 3: Publisher Service
 
