@@ -1,6 +1,8 @@
 package helpers
 
-import "os"
+import (
+	"os"
+)
 
 func CheckFileExists(filePath string) bool {
 	if _, fileFound := os.Stat(filePath); fileFound == nil {

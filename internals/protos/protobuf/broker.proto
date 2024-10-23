@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package broker;
+
+option go_package = "broker/api/proto";
+
+service Broker {
+
+  rpc Publish (PublishRequest) returns (PublishResponse);
+
+  rpc Subscribe(SubscribeRequest) returns (stream MessageResponse);
+
+  rpc Fetch(FetchRequest) returns (MessageResponse);
+}
+
+message PublishRequest {
+  string subject = 1;
+  bytes body = 2;
+  int32 expirationSeconds = 3;
+}
+
+message PublishResponse {
+  int32 id = 1;
+}
+
+message SubscribeRequest {
+  string subject = 1;
+}
+
+message MessageResponse {
+  bytes body = 1;
+}
+
+message FetchRequest {
+  string subject = 1;
+  int32 id = 2;
+}
