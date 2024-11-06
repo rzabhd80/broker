@@ -7,21 +7,21 @@ import (
 	"time"
 )
 
-func (broker *BrokerServer) SetupRaft() (*raft.Raft, error) {
+func (broker *BrokerServer) SetupRaft() (*raft.Raft, raft.SnapshotStore, error) {
 	logs := raft.NewInmemStore()
 	stable := raft.NewInmemStore()
-	snapshots := raft.NewDiscardSnapshotStore()
+	snapshots, err := raft.NewFileSnapshotStore(broker.EnvConfig.SnapShotPath, 2, os.Stderr)
 	config := raft.DefaultConfig()
-	peerAddress := broker.envConfig.ClusterNods
-	transportAddr := fmt.Sprintf(":%s", broker.envConfig.Port)
+	peerAddress := broker.EnvConfig.ClusterNodes
+	transportAddr := fmt.Sprintf(":%s", broker.EnvConfig.Port)
 	transport, err := raft.NewTCPTransport(transportAddr, nil, 3, 10*time.Second, os.Stderr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	r, err := raft.NewRaft(config, &broker.fsm, logs, stable, snapshots, transport)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	future := r.BootstrapCluster(raft.Configuration{
@@ -33,16 +33,15 @@ func (broker *BrokerServer) SetupRaft() (*raft.Raft, error) {
 		},
 	})
 	if err := future.Error(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	// Add the other peers as voters in the cluster
 	for _, peerAddr := range peerAddress {
 		future := r.AddVoter(raft.ServerID("node-id-peer"), raft.ServerAddress(peerAddr), 0, 0)
 		if future.Error() != nil {
-			return nil, future.Error()
+			return nil, nil, future.Error()
 		}
 	}
 
-	return r, nil
+	return r, snapshots, nil
 }

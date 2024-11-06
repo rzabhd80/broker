@@ -16,11 +16,15 @@ type BrokerConfig struct {
 }
 
 type DevelopmentBrokerConfig struct {
-	NodeId      string   `env:"NOD_ID"`
-	ClusterNods []string `env:"Cluster_Nods"`
-	Host        string   `env:"HOST"`
-	Port        string   `env:"PORT"`
-	Network     string   `env:"NETWORK"`
+	NodeId        string   `env:"NOD_ID"`
+	ClusterNodes  []string `env:"Cluster_Nods"`
+	Host          string   `env:"HOST"`
+	Port          string   `env:"PORT"`
+	Network       string   `env:"NETWORK"`
+	RedisHost     string   `env:"BROKER_REDIS_HOST"`
+	RedisPort     string   `env:"REDIS_PORT"`
+	RedisPassword string   `env:"REDIS_PASSWORD"`
+	SnapShotPath  string   `env:"SNAPSHOT_PATH"`
 }
 
 func (cnf DevelopmentBrokerConfig) info() (string, error) {
@@ -61,7 +65,7 @@ func readDeploymentBrokerEnvironment() (*DeploymentBrokerConfig, error) {
 func SetBrokerEnvironment() (*DevelopmentBrokerConfig, *DeploymentBrokerConfig, error) {
 	var envConfDevelop *DevelopmentBrokerConfig
 	var envConfDeploy *DeploymentBrokerConfig
-	if found := helpers.CheckFileExists("dev.env"); found && os.Getenv("MODE") == "develop" {
+	if found := helpers.CheckFileExists(".env"); found && os.Getenv("MODE") == "develop" {
 		if cnf, err := readDevelopBrokerEnvironment(); err != nil {
 			return nil, nil, err
 		} else {
