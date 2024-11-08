@@ -1,56 +1,87 @@
-version: '3'
+version: '3.8'
+
 services:
-  redis:
-    image: redis:alpine
-    ports:
-      - "6379:6379"
-    networks:
-      - raft-network
-
-  raft-node1:
-    image: your-image
-    container_name: raft-node1
-    ports:
-      - "5001:5002"
+  broker1:
+    build:
+      context: ..
+      dockerfile: Broker.Dockerfile
     environment:
-      - REDIS_URL=${REDIS_URL}
-      - DB_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
-      - NODE_ID=node1
-      - RAFT_PORT=5001
-      - PEER_ADDRS=raft-node2:5002,raft-node3:5002
-    networks:
-      - raft-network
-
-  raft-node2:
-    image: your-image
-    container_name: raft-node2
+      - ENV=staging
+      - NODE_ID=1
+      - PEERS=broker1:50051,broker2:50052,broker3:50053
     ports:
-      - "5002:5002"
-    environment:
-      - REDIS_URL=${REDIS_URL}
-      - DB_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
-      - NODE_ID=node2
-      - RAFT_PORT=5002
-      - PEER_ADDRS=raft-node1:5002,raft-node3:5002
+      - "50051:5000"
     networks:
-      - raft-network
+      - app-network
+    env_file:
+      - ../.env
 
-  raft-node3:
-    image: your-image
-    container_name: raft-node3
+  broker2:
+    build:
+      context: ..
+      dockerfile: Broker.Dockerfile
+    environment:
+      - ENV=staging
+      - NODE_ID=2
+      - PEERS=broker1:50051,broker2:50052,broker3:50053
     ports:
-      - "5003:5002"
-    environment:
-      - REDIS_URL=${REDIS_URL}
-      - DB_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
-      - NODE_ID=node3
-      - RAFT_PORT=5003
-      - PEER_ADDRS=raft-node1:5002,raft-node2:5002
+      - "50052:5000"
     networks:
-      - raft-network
+      - app-network
+    env_file:
+      - ../.env
 
+  broker3:
+    build:
+      context: ..
+      dockerfile: Broker.Dockerfile
+    environment:
+      - ENV=staging
+      - NODE_ID=3
+      - PEERS=broker1:50051,broker2:50052,broker3:50053
+    ports:
+      - "50053:5000"
+    networks:
+      - app-network
+    env_file:
+      - ../.env
+
+  publisher:
+    build:
+      context: ..
+      dockerfile: Publisher.Dockerfile
+    environment:
+      - ENV=staging
+      - BROKER_ADDRESS=broker1:50051  # Connect to any broker; they’ll route to the leader
+    ports:
+      - "50054:5000"
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+    networks:
+      - app-network
+    env_file:
+      - ../.env
+
+  subscriber:
+    build:
+      context: ..
+      dockerfile: Subscriber.Dockerfile
+    environment:
+      - ENV=staging
+      - BROKER_ADDRESS=broker1:50051  # Connect to any broker; they’ll route to the leader
+    ports:
+      - "50055:5000"
+    depends_on:
+      - broker1
+      - broker2
+      - broker3
+    networks:
+      - app-network
+    env_file:
+      - ../.env
 
 networks:
-  raft-network:
+  app-network:
     driver: bridge
-

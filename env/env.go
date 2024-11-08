@@ -58,6 +58,15 @@ func readDevelopBrokerEnvironment() (*DevelopmentBrokerConfig, error) {
 	return cfg, nil
 }
 
+func ReadDevelopmentBrokerClient() (*DevelopmentClientBrokerConfig, error) {
+	conf := &DevelopmentClientBrokerConfig{}
+	err := env.Parse(conf)
+	if err != nil {
+		return nil, err
+	}
+	return conf, nil
+}
+
 func readDeploymentBrokerEnvironment() (*DeploymentBrokerConfig, error) {
 	cfg := &DeploymentBrokerConfig{}
 	err := env.Parse(cfg)
