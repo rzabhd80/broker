@@ -3,31 +3,21 @@ services:
   redis:
     image: redis:alpine
     ports:
-       -"6379:6379"
+      - "6379:6379"
     networks:
-       -raft-network
-  db:
-   image: postgres:13
-    environment:
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME}
-    ports:
-      - "5432:5432"
-    network:
       - raft-network
 
   raft-node1:
     image: your-image
     container_name: raft-node1
     ports:
-      - "5001:5001"
+      - "5001:5002"
     environment:
       - REDIS_URL=${REDIS_URL}
       - DB_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
       - NODE_ID=node1
       - RAFT_PORT=5001
-      - PEER_ADDRS=raft-node2:5002,raft-node3:5003
+      - PEER_ADDRS=raft-node2:5002,raft-node3:5002
     networks:
       - raft-network
 
@@ -41,7 +31,7 @@ services:
       - DB_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
       - NODE_ID=node2
       - RAFT_PORT=5002
-      - PEER_ADDRS=raft-node1:5001,raft-node3:5003
+      - PEER_ADDRS=raft-node1:5002,raft-node3:5002
     networks:
       - raft-network
 
@@ -49,18 +39,18 @@ services:
     image: your-image
     container_name: raft-node3
     ports:
-      - "5003:5003"
+      - "5003:5002"
     environment:
       - REDIS_URL=${REDIS_URL}
       - DB_URL=postgres://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}?sslmode=disable
       - NODE_ID=node3
       - RAFT_PORT=5003
-      - PEER_ADDRS=raft-node1:5001,raft-node2:5002
+      - PEER_ADDRS=raft-node1:5002,raft-node2:5002
     networks:
       - raft-network
 
 
-  networks:
+networks:
   raft-network:
     driver: bridge
 

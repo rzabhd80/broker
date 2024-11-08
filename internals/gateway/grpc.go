@@ -38,7 +38,7 @@ func (gw *GrpcGateWay) init(ctx context.Context) error {
 	envConfDev, envConfDeploy, err := env.SetBrokerEnvironment()
 	gw.EnvDev = envConfDev
 	gw.EnvDeploy = envConfDeploy
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", gw.EnvDev.Port))
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%s", gw.EnvDev.TransportPort))
 	if err != nil {
 		logrus.Panic("could not read the env file")
 		panic(nil)

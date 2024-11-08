@@ -16,19 +16,24 @@ type BrokerConfig struct {
 }
 
 type DevelopmentBrokerConfig struct {
-	NodeId        string   `env:"NOD_ID"`
-	ClusterNodes  []string `env:"Cluster_Nods"`
-	Host          string   `env:"HOST"`
-	Port          string   `env:"PORT"`
+	Initiator     bool     `env:"INITIATOR"`
+	NodeId        string   `env:"NODE_ID"`
 	Network       string   `env:"NETWORK"`
+	ClusterNodes  []string `env:"CLUSTER_NODES" envSeparator:","`
+	TransportPort string   `env:"TRANSPORT_PORT"`
 	RedisHost     string   `env:"BROKER_REDIS_HOST"`
 	RedisPort     string   `env:"REDIS_PORT"`
 	RedisPassword string   `env:"REDIS_PASSWORD"`
 	SnapShotPath  string   `env:"SNAPSHOT_PATH"`
 }
 
+type DevelopmentClientBrokerConfig struct {
+	NodeName   string   `env:"NODE_NAME"`
+	KnownHosts []string `env:"KNOWN_HOSTS" envSeparator:","`
+}
+
 func (cnf DevelopmentBrokerConfig) info() (string, error) {
-	return fmt.Sprintf("host: %s port: %s", cnf.Host, cnf.Port), nil
+	return fmt.Sprintf(""), nil
 }
 
 type DeploymentBrokerConfig struct {
