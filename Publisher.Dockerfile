@@ -1,27 +1,27 @@
-# Multi-stage build for the publisher service
-# Stage 1: Build
-FROM golang:1.20-alpine AS builder
+# Base Go image for building
+FROM golang:1.22-alpine AS builder
 WORKDIR /app
 
-# Copy go.mod and go.sum files to cache dependencies
+# Copy go.mod and go.sum files separately to cache modules if they haven't changed
 COPY go.mod go.sum ./
+
+# Download dependencies to cache them if unchanged
 RUN go mod download
 
-# Copy the publisher service code
-COPY boot/publisher/ ./publisher/
+# Copy the rest of the source code
+COPY . .
 
 # Build the publisher binary
-RUN go build -o /publisher ./publisher/main.go
+RUN go build -o /publisher ./boot/publisher/publisher.main.go
 
-# Stage 2: Run
+# Multi-stage build for the final publisher image
 FROM alpine:latest
 WORKDIR /root/
 
-# Copy the built binary from builder stage
+# Copy the built binary from the builder stage
 COPY --from=builder /publisher .
 
-# Expose port (adjust as needed)
-EXPOSE 50052
+# Expose the port as needed for the publisher service
+EXPOSE 5000
 
-# Run the publisher binary
 ENTRYPOINT ["./publisher"]

@@ -1,48 +1,87 @@
-version: '3.8'
+version: '3'
 
 services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6381:6379"
+    networks:
+      - broker-network
+  redis1:
+    image: redis:latest
+    ports:
+      - "6382:6379"
+    networks:
+      - broker-network
+  redis2:
+    image: redis:latest
+    ports:
+      - "6382:6379"
+    networks:
+      - broker-network
+
   broker1:
     build:
       context: ..
       dockerfile: Broker.Dockerfile
-    environment:
-      - ENV=staging
-      - NODE_ID=1
-      - PEERS=broker1:50051,broker2:50052,broker3:50053
     ports:
-      - "50051:5000"
+      - "5001:5001"  # Expose 5001 on localhost for broker1
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NODE_ID=1
+      - RAFT_PORT=5001  # Unique internal port for broker1
+      - TRANSPORT_PORT=8081
+      - SNAPSHOT_PATH="./snapshots"
+      - CLUSTER_NODES=broker1:5001,broker2:5002,broker3:5003
+      - INITIATOR=true
+    depends_on:
+      - redis
     networks:
-      - app-network
+      - broker-network
     env_file:
       - ../.env
+    restart: always
 
   broker2:
     build:
       context: ..
       dockerfile: Broker.Dockerfile
-    environment:
-      - ENV=staging
-      - NODE_ID=2
-      - PEERS=broker1:50051,broker2:50052,broker3:50053
     ports:
-      - "50052:5000"
+      - "5002:5002"  # Expose 5002 on localhost for broker2
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6381
+      - NODE_ID=2
+      - RAFT_PORT=5002  # Unique internal port for broker2
+      - TRANSPORT_PORT=8081
+      - SNAPSHOT_PATH="./snapshots"
+      - CLUSTER_NODES=broker1:5001,broker2:5002,broker3:5003
+      - INITIATOR="false
+    depends_on:
+      - redis
     networks:
-      - app-network
-    env_file:
-      - ../.env
+      - broker-network
 
   broker3:
     build:
       context: ..
       dockerfile: Broker.Dockerfile
-    environment:
-      - ENV=staging
-      - NODE_ID=3
-      - PEERS=broker1:50051,broker2:50052,broker3:50053
     ports:
-      - "50053:5000"
+      - "5003:5003"  # Expose 5003 on localhost for broker3
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6381
+      - NODE_ID=3
+      - RAFT_PORT=5003  # Unique internal port for broker3
+      - TRANSPORT_PORT=8081
+      - SNAPSHOT_PATH="./snapshots"
+      - CLUSTER_NODES=broker1:5001,broker2:5002,broker3:5003
+      - INITIATOR=false
+    depends_on:
+      - redis
     networks:
-      - app-network
+      - broker-network
     env_file:
       - ../.env
 
@@ -51,37 +90,27 @@ services:
       context: ..
       dockerfile: Publisher.Dockerfile
     environment:
-      - ENV=staging
-      - BROKER_ADDRESS=broker1:50051  # Connect to any broker; they’ll route to the leader
-    ports:
-      - "50054:5000"
+      - KnownHosts=broker1:5001  # Updated internal ports for each broker
     depends_on:
       - broker1
-      - broker2
-      - broker3
+#      - broker2
+#      - broker3
     networks:
-      - app-network
-    env_file:
-      - ../.env
+      - broker-network
 
   subscriber:
     build:
       context: ..
       dockerfile: Subscriber.Dockerfile
     environment:
-      - ENV=staging
-      - BROKER_ADDRESS=broker1:50051  # Connect to any broker; they’ll route to the leader
-    ports:
-      - "50055:5000"
+      - KnownHosts=broker1:5001 # Updated internal ports for each broker
     depends_on:
       - broker1
-      - broker2
-      - broker3
+#      - broker2
+#      - broker3
     networks:
-      - app-network
-    env_file:
-      - ../.env
+      - broker-network
 
 networks:
-  app-network:
+  broker-network:
     driver: bridge

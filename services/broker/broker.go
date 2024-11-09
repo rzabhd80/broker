@@ -3,6 +3,7 @@ package broker
 import (
 	redisService "broker/boot/redis"
 	"broker/env"
+	"broker/interfaces"
 	"broker/internals/dbms"
 	"broker/internals/models"
 	"broker/internals/protos/generated/broker/api/proto"
@@ -13,10 +14,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/hashicorp/raft"
 	"github.com/sirupsen/logrus"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
+	"log"
 	"sync"
 	"time"
 )
@@ -29,10 +27,15 @@ type BrokerServer struct {
 	SnapShotStore raft.SnapshotStore
 	fsm           FsmMachine
 	EnvConfig     *env.DevelopmentBrokerConfig
+	messageStore  interfaces.MessageStore
 	RedisClient   *redis.Client
-	dbms          dbms.Dbms
+	dbms          *dbms.Memory
 	isClosed      bool
-	mutex         sync.Mutex
+	mutex         sync.RWMutex
+}
+
+func (broker *BrokerServer) GetRedisClient() *redis.Client {
+	return broker.RedisClient
 }
 
 func SetupBrokerServer() (*BrokerServer, error) {
@@ -42,43 +45,45 @@ func SetupBrokerServer() (*BrokerServer, error) {
 	broker := &BrokerServer{
 		EnvConfig: &env.DevelopmentBrokerConfig{},
 		fsm:       FsmMachine{Messages: make(map[string][]models.Message)},
-		mutex:     sync.Mutex{},
+		mutex:     sync.RWMutex{},
 	}
 
-	raftInstance, snapshot, err := broker.SetupRaft()
+	//raftInstance, snapshot, err := broker.SetupRaft()
+	//if err != nil {
+	//	logrus.Println("broker server couldnt be started")
+	//	return nil, err
+	//}
+	//broker.messageStore, err = dbms.InitRAM(broker)
+	//
+	//if err != nil {
+	//	logrus.Println("mem db server couldnt be started")
+	//	panic("couldnt set up db")
+	//}
+	//broker.Raft = raftInstance
+	//broker.SnapShotStore = snapshot
+	redisClient, err := redisService.InitRedis()
+	fmt.Printf("redis client %s", redisClient)
+	broker.RedisClient = redisClient
 	if err != nil {
-		return nil, err
+		fmt.Printf("couldnt set yp redis client")
 	}
-
-	broker.Raft = raftInstance
-	broker.SnapShotStore = snapshot
-	broker.RedisClient, err = redisService.InitRedis(broker.EnvConfig.RedisHost, broker.EnvConfig.RedisPort,
-		broker.EnvConfig.RedisPassword)
-	broker.dbms, err = dbms.InitRAM(broker)
+	dbmsInstance, err := dbms.InitRAM(broker)
+	broker.dbms = dbmsInstance
+	log.Printf("redis ram storage initiated %s", broker.dbms)
 	ServerInstance = broker
 	return broker, nil
 }
 
 func (broker *BrokerServer) Publish(ctx context.Context, request *proto.PublishRequest) (*proto.PublishResponse, error) {
-	if broker.Raft.State() != raft.Leader {
-		// If not the leader, set the leader's address in the gRPC metadata
-		leader, _ := broker.Raft.LeaderWithID()
-		leaderAddr := string(leader)
-		md := metadata.Pairs("leader-addr", leaderAddr)
-		err := grpc.SetHeader(ctx, md)
-		if err != nil {
-			return nil, err
-		}
-
-		return nil, status.Errorf(codes.FailedPrecondition, "not the leader, please connect to %s", leaderAddr)
-	}
+	log.Printf("publishing message")
 	msg := models.Message{
 		Id:         0,
 		Body:       string(request.Body),
 		Expiration: time.Duration(request.ExpirationSeconds),
 	}
+	messageId, err := redisService.StoreMessage(*broker.RedisClient, msg, request.Subject)
+	fmt.Println("message saved")
 	var errorFound bool = false
-	messageId, err := broker.dbms.StoreMessage(msg, request.Subject)
 	if err != nil {
 		errorFound = true
 	}
@@ -87,7 +92,10 @@ func (broker *BrokerServer) Publish(ctx context.Context, request *proto.PublishR
 	if err != nil {
 		errorFound = true
 	}
+	fmt.Printf("%sd", msg.Id)
+	fmt.Printf("%s", msg.Id)
 	err = broker.RedisClient.Publish(ctx, request.Subject, msgJSON).Err()
+	fmt.Println("message published")
 	if err != nil {
 		errorFound = true
 	}
@@ -100,72 +108,86 @@ func (broker *BrokerServer) Publish(ctx context.Context, request *proto.PublishR
 	return &proto.PublishResponse{Id: int32(msg.Id)}, nil
 
 }
-
 func (broker *BrokerServer) Subscribe(request *proto.SubscribeRequest,
 	subscribeServer proto.Broker_SubscribeServer) error {
-	if broker.isClosed {
-		return errors.New("broker Is Down")
-	}
-	broker.mutex.Lock()
-	defer broker.mutex.Unlock()
 
-	ch := make(chan models.Message, 100)
-	channelContext := context.Background()
-	pubsub := broker.RedisClient.Subscribe(channelContext, request.Subject)
-	_, err := pubsub.Receive(channelContext)
-	if err != nil {
+	log.Printf("Subscription request received for subject: %s", request.Subject)
+
+	if broker.isClosed {
+		return fmt.Errorf("broker is down")
+	}
+
+	// Use read lock
+	broker.mutex.RLock()
+	defer broker.mutex.RUnlock()
+
+	ctx := subscribeServer.Context()
+
+	// Debug Redis connection
+	status := broker.RedisClient.Ping(ctx)
+	if err := status.Err(); err != nil {
+		log.Printf("Redis connection check failed: %v", err)
+		return fmt.Errorf("redis connection error: %w", err)
+	}
+	log.Printf("Redis connection verified")
+
+	// Subscribe to Redis channel
+	pubsub := broker.RedisClient.Subscribe(ctx, request.Subject)
+	defer pubsub.Close()
+
+	// Verify subscription
+	if _, err := pubsub.Receive(ctx); err != nil {
+		log.Printf("Redis subscription failed: %v", err)
+		return fmt.Errorf("failed to subscribe: %w", err)
+	}
+	log.Printf("Redis subscription confirmed for subject: %s", request.Subject)
+
+	// Get message channel
+	msgChan := pubsub.Channel()
+	log.Printf("Redis message channel established")
+
+	// Send initial confirmation message (optional)
+	confirmMsg := &proto.MessageResponse{
+		Body: []byte("Subscription active"),
+	}
+	if err := subscribeServer.Send(confirmMsg); err != nil {
+		log.Printf("Failed to send confirmation message: %v", err)
 		return err
 	}
+	log.Printf("Sent confirmation message to subscriber")
 
-	go func() {
-		defer func(pubsub *redis.PubSub) {
-			err := pubsub.Close()
-			if err != nil {
-				logrus.Error("ERROR: Connection With Sub Interrupted")
-			}
-		}(pubsub)
-
-		for {
-			msg, err := pubsub.ReceiveMessage(channelContext)
-			if err != nil {
-				close(ch)
-				return
-			}
-
-			var message models.Message
-			err = json.Unmarshal([]byte(msg.Payload), &message)
-			if err != nil {
-				continue
-			}
-
-			select {
-			case ch <- message:
-			default:
-			}
-		}
-	}()
+	// Message processing loop
 	for {
 		select {
-		case msg := <-ch:
-			protoMsg := &proto.MessageResponse{Body: []byte(msg.Body)}
+		case msg, ok := <-msgChan:
+			if !ok {
+				log.Printf("Redis message channel closed")
+				return nil
+			}
+			log.Printf("Received message from Redis: %s", msg.Payload)
+
+			protoMsg := &proto.MessageResponse{
+				Body: []byte(msg.Payload),
+			}
 
 			if err := subscribeServer.Send(protoMsg); err != nil {
-				logrus.Error("ERROR: Could Not Send Message To Subscriber")
-				return err
+				log.Printf("Failed to send message to subscriber: %v", err)
+				return fmt.Errorf("failed to send message: %w", err)
 			}
-		case <-subscribeServer.Context().Done():
-			logrus.Println("Subscriber Left")
-			return err
+			log.Printf("Successfully sent message to subscriber")
+
+		case <-ctx.Done():
+			log.Printf("Subscriber context cancelled")
+			return nil
 		}
 	}
 }
-
 func (broker *BrokerServer) Fetch(ctx context.Context, request *proto.FetchRequest) (*proto.MessageResponse, error) {
 	if broker.isClosed {
 		return nil, errors.New("Broker Channel Closed")
 	}
 
-	msg, err := broker.dbms.FetchMessage(int(request.Id), request.Subject)
+	msg, err := redisService.FetchMessage(*broker.RedisClient, int(request.Id), request.Subject)
 	if err != nil {
 		return nil, errors.New("Could Not Fetch Message")
 	}

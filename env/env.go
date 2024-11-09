@@ -21,15 +21,15 @@ type DevelopmentBrokerConfig struct {
 	Network       string   `env:"NETWORK"`
 	ClusterNodes  []string `env:"CLUSTER_NODES" envSeparator:","`
 	TransportPort string   `env:"TRANSPORT_PORT"`
-	RedisHost     string   `env:"BROKER_REDIS_HOST"`
+	RedisHost     string   `env:"REDIS_HOST"`
 	RedisPort     string   `env:"REDIS_PORT"`
 	RedisPassword string   `env:"REDIS_PASSWORD"`
 	SnapShotPath  string   `env:"SNAPSHOT_PATH"`
 }
 
 type DevelopmentClientBrokerConfig struct {
-	NodeName   string   `env:"NODE_NAME"`
-	KnownHosts []string `env:"KNOWN_HOSTS" envSeparator:","`
+	//NodeName   string   `env:"NODE_NAME"`
+	KnownHosts []string `env:"KnownHosts" envSeparator:","`
 }
 
 func (cnf DevelopmentBrokerConfig) info() (string, error) {

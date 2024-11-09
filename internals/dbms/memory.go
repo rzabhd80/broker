@@ -1,13 +1,13 @@
 package dbms
 
 import (
+	"broker/interfaces"
 	"broker/internals/models"
-	"broker/services/broker"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/go-redis/redis/v8"
+	"log"
 	"time"
 )
 
@@ -16,16 +16,9 @@ type Memory struct {
 	client *redis.Client
 }
 
-func InitRAM(server *broker.BrokerServer) (*Memory, error) {
-	redisClient := server.RedisClient
-
-	ctx := context.Background()
-	_, err := redisClient.Ping(ctx).Result()
-	if err != nil {
-		fmt.Println("Error:", err)
-		return nil, err
-	}
-
+func InitRAM(server interfaces.BrokerServices) (*Memory, error) {
+	redisClient := server.GetRedisClient()
+	log.Printf("redis client in db %s", redisClient)
 	return &Memory{
 		client: redisClient,
 	}, nil

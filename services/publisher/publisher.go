@@ -50,8 +50,11 @@ func runSingle(host string) {
 }
 
 func RunClientMassiveMessage(hosts []string) {
-
 	brokerClientNode := brokerClient.NewBrokerClient(hosts)
+	err := brokerClientNode.Connect()
+	if err != nil {
+		return
+	}
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 	logger.Out = os.Stdout
@@ -71,7 +74,7 @@ func RunClientMassiveMessage(hosts []string) {
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
-	ticker := time.NewTicker(80 * time.Microsecond)
+	ticker := time.NewTicker(5 * time.Second)
 
 	done := make(chan bool)
 

@@ -22,3 +22,7 @@ func GenerateUniqueID() int {
 	}
 	return uniqueID
 }
+
+func IsInitiator(val string) bool {
+	return val == "true"
+}
