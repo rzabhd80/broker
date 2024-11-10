@@ -48,10 +48,10 @@ func (broker *BrokerServer) SetupRaft() (*raft.Raft, raft.SnapshotStore, error) 
 		}
 
 		for _, peerAddr := range peerAddress {
-			log.Println("adding voters")
 			nodeID := raft.ServerID(fmt.Sprintf("node-%s", peerAddr))
+			log.Println("adding voters")
 			future := r.AddVoter(nodeID, raft.ServerAddress(peerAddr), 0, 0)
-			log.Printf("future %s", future)
+			log.Printf("future %s")
 			if future.Error() != nil {
 				fmt.Printf("future eror %s", err)
 				return nil, nil, future.Error()

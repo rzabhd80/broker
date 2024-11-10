@@ -23,152 +23,127 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// Global channel for broadcasting messages to all WebSocket clients
 var broadcast = make(chan []byte)
-
-// Map to keep track of all connected WebSocket clients
 var clients = make(map[*websocket.Conn]bool)
 
 func main() {
-	// Setup enhanced logging
 	logger := logrus.New()
 	logger.SetLevel(logrus.DebugLevel)
 	logger.Out = os.Stdout
 
-	// Setup client with debug info
 	hosts := []string{"localhost:5001"}
 	brokerClientNode := brokerClient.NewBrokerClient(hosts)
-	if err := brokerClientNode.Connect(); err != nil {
-		logger.Fatalf("Failed to setup broker client: %v", err)
-		return
-	}
-	logger.Debugf("Connected to broker at: %s", brokerClientNode.CurrentNode)
 
-	// Enhanced gRPC connection with keepalive
 	kacp := keepalive.ClientParameters{
 		Time:                10 * time.Second,
 		Timeout:             time.Second,
 		PermitWithoutStream: true,
 	}
 
-	conn, err := grpc.Dial(
-		brokerClientNode.CurrentNode,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithKeepaliveParams(kacp),
-		grpc.WithBlock(),
-	)
-	if err != nil {
-		logger.Fatalf("Failed to connect: %v", err)
-	}
-	defer conn.Close()
-	logger.Debug("Successfully established gRPC connection")
-
-	// Create broker client
-	client := pb.NewBrokerClient(conn)
-
-	// Create context with timeout for initial connection
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
-	// Setup subscription with debug info
-	subject := "sample"
-	logger.Debugf("Subscribing to subject: %s", subject)
-	subscribeRequest := &pb.SubscribeRequest{Subject: subject}
-
-	stream, err := client.Subscribe(ctx, subscribeRequest)
-	if err != nil {
-		logger.Fatalf("Subscribe failed: %v", err)
-	}
-	logger.Debug("Successfully created subscription stream")
-
-	// Setup signal handling
+	// Signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	// Create message channel with buffer
-	messageChan := make(chan *pb.MessageResponse, 100)
 
 	// Start WebSocket broadcaster
 	go handleBroadcasts()
 
-	// Setup HTTP server for WebSocket and static files
 	http.HandleFunc("/ws", handleWebSocket)
 	http.HandleFunc("/", serveHome)
 
-	// Start HTTP server
 	go func() {
-		logger.Info("Starting WebSocket server on :8080")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
+		logger.Info("Starting WebSocket server on :8082")
+		if err := http.ListenAndServe(":8083", nil); err != nil {
 			logger.Fatalf("Failed to start HTTP server: %v", err)
 		}
 	}()
 
-	// Start receive goroutine with debug info
-	logger.Info("Starting to process messages...")
-	go func() {
-		logger.Debug("Starting message receive loop")
-		for {
-			logger.Debug("Waiting for next message...")
-			msg, err := stream.Recv()
-			if err == io.EOF {
-				logger.Info("Stream closed by server")
-				close(messageChan)
-				return
-			}
-			if err != nil {
-				logger.Errorf("Error receiving message: %v", err)
-				close(messageChan)
-				return
-			}
-			logger.Debugf("Received raw message: %v", msg)
-			select {
-			case messageChan <- msg:
-				logger.Debug("Message sent to processing channel")
-				// Broadcast to WebSocket clients
-				broadcast <- msg.Body
-			default:
-				logger.Warn("Message channel full, dropping message")
-			}
-		}
-	}()
-
-	// Test message publishing (optional, for debugging)
-	go func() {
-		time.Sleep(5 * time.Second)
-		testMsg := &pb.PublishRequest{
-			Subject: subject,
-			Body:    []byte("test message"),
-		}
-		_, err := client.Publish(context.Background(), testMsg)
-		if err != nil {
-			logger.Errorf("Failed to publish test message: %v", err)
-		} else {
-			logger.Debug("Published test message")
-		}
-	}()
-
-	// Main loop
 	for {
-		select {
-		case msg, ok := <-messageChan:
-			if !ok {
-				logger.Info("Message channel closed")
-				return
-			}
-			logger.Infof("Processing message: %s", string(msg.Body))
+		// Attempt to connect to gRPC server
+		if err := brokerClientNode.Connect(); err != nil {
+			logger.Errorf("Failed to setup broker client: %v", err)
+			time.Sleep(5 * time.Second) // Wait before retrying
+			continue
+		}
 
-		case sig := <-sigChan:
-			logger.Infof("Received signal: %v", sig)
+		conn, err := grpc.Dial(
+			brokerClientNode.CurrentNode,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithKeepaliveParams(kacp),
+			grpc.WithBlock(),
+		)
+		if err != nil {
+			logger.Errorf("Failed to connect: %v", err)
+			time.Sleep(5 * time.Second) // Wait before retrying
+			continue
+		}
+		defer conn.Close()
+		logger.Debug("Successfully established gRPC connection")
+
+		client := pb.NewBrokerClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+
+		// Subscribe to subject
+		subject := "sample"
+		logger.Debugf("Subscribing to subject: %s", subject)
+		subscribeRequest := &pb.SubscribeRequest{Subject: subject}
+
+		stream, err := client.Subscribe(ctx, subscribeRequest)
+		if err != nil {
+			logger.Errorf("Subscribe failed: %v", err)
 			cancel()
-			return
+			time.Sleep(5 * time.Second) // Wait before retrying
+			continue
+		}
+		logger.Debug("Successfully created subscription stream")
 
-		case <-ctx.Done():
-			if ctx.Err() == context.DeadlineExceeded {
-				logger.Error("Subscription timed out")
-			} else {
-				logger.Info("Context cancelled")
+		messageChan := make(chan *pb.MessageResponse, 100)
+		go receiveMessages(stream, messageChan, broadcast, logger)
+
+		for {
+			select {
+			case msg, ok := <-messageChan:
+				if !ok {
+					logger.Info("Message channel closed, attempting to reconnect...")
+					cancel()
+					break
+				}
+				logger.Infof("Processing message: %s", string(msg.Body))
+
+			case sig := <-sigChan:
+				logger.Infof("Received signal: %v", sig)
+				cancel()
+				return
+
+			case <-ctx.Done():
+				logger.Warn("Context canceled, attempting to reconnect...")
+				cancel()
+				break
 			}
+		}
+
+		time.Sleep(5 * time.Second) // Wait before trying to reconnect
+	}
+}
+
+func receiveMessages(stream pb.Broker_SubscribeClient, messageChan chan<- *pb.MessageResponse, broadcast chan<- []byte, logger *logrus.Logger) {
+	defer close(messageChan)
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			logger.Info("Stream closed by server")
 			return
+		}
+		if err != nil {
+			logger.Errorf("Error receiving message: %v", err)
+			return
+		}
+		logger.Debugf("Received raw message: %v", msg)
+		select {
+		case messageChan <- msg:
+			logger.Debug("Message sent to processing channel")
+			broadcast <- msg.Body
+		default:
+			logger.Warn("Message channel full, dropping message")
 		}
 	}
 }
@@ -184,7 +159,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	clients[conn] = true
 	defer delete(clients, conn)
 
-	// Keep the connection alive
 	for {
 		_, _, err := conn.ReadMessage()
 		if err != nil {

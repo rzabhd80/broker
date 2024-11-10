@@ -1,145 +1,121 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Message Stream Viewer</title>
+    <title>Message Stream</title>
     <style>
         body {
-            font-family: system-ui, -apple-system, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: #1a1a1a;
-            color: #fff;
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-        #header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
+
         #status {
-            padding: 8px 16px;
+            padding: 10px;
+            margin: 10px 0;
             border-radius: 4px;
-            font-weight: 500;
         }
+
         .connected {
-            background: #10B981;
+            background-color: #d4edda;
+            color: #155724;
         }
+
         .disconnected {
-            background: #EF4444;
+            background-color: #f8d7da;
+            color: #721c24;
         }
+
+        .connecting {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+
         #messages {
-            height: 70vh;
+            height: 400px;
             overflow-y: auto;
-            background: #2d2d2d;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        .message {
-            padding: 12px;
-            margin: 8px 0;
-            background: #3d3d3d;
-            border-radius: 6px;
-            font-family: monospace;
-            word-break: break-all;
-        }
-        .message:hover {
-            background: #4d4d4d;
-        }
-        .timestamp {
-            color: #10B981;
-            margin-right: 10px;
-            font-size: 0.9em;
-        }
-        #stats {
-            margin-top: 20px;
-            display: flex;
-            gap: 20px;
-            font-size: 0.9em;
-        }
-        .stat {
-            background: #2d2d2d;
-            padding: 10px 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 10px 0;
             border-radius: 4px;
+        }
+
+        .message {
+            padding: 8px;
+            margin: 5px 0;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+
+        .timestamp {
+            color: #6c757d;
+            font-size: 0.8em;
         }
     </style>
 </head>
 <body>
-<div class="container">
-    <div id="header">
-        <h1>Message Stream</h1>
-        <div id="status" class="disconnected">Disconnected</div>
-    </div>
-    <div id="messages"></div>
-    <div id="stats">
-        <div class="stat">Messages: <span id="messageCount">0</span></div>
-        <div class="stat">Last Message: <span id="lastMessageTime">-</span></div>
-    </div>
-</div>
+<h1>Message Stream</h1>
+<div id="status" class="connecting">Connecting...</div>
+<div id="messages"></div>
 
 <script>
+    let socket = null;
+    let reconnectInterval = 5000; // 5 seconds
     const messagesDiv = document.getElementById('messages');
     const statusDiv = document.getElementById('status');
-    const messageCountSpan = document.getElementById('messageCount');
-    const lastMessageTimeSpan = document.getElementById('lastMessageTime');
-    let messageCount = 0;
 
     function connect() {
-        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        statusDiv.textContent = 'Connecting...';
+        statusDiv.className = 'connecting';
 
-        ws.onopen = () => {
+        socket = new WebSocket('ws://localhost:8080/ws');
+
+        socket.onopen = function() {
             statusDiv.textContent = 'Connected';
             statusDiv.className = 'connected';
-            appendMessage('System: Connected to WebSocket server');
         };
 
-        ws.onclose = () => {
-            statusDiv.textContent = 'Disconnected';
+        socket.onclose = function() {
+            statusDiv.textContent = 'Disconnected - Reconnecting in 5 seconds...';
             statusDiv.className = 'disconnected';
-            appendMessage('System: Connection lost - Reconnecting...');
-            setTimeout(connect, 1000);
+            setTimeout(connect, reconnectInterval);
         };
 
-        ws.onmessage = (event) => {
-            messageCount++;
-            messageCountSpan.textContent = messageCount;
-            lastMessageTimeSpan.textContent = new Date().toLocaleTimeString();
-            appendMessage(event.data);
+        socket.onerror = function(error) {
+            statusDiv.textContent = 'Error - Reconnecting in 5 seconds...';
+            statusDiv.className = 'disconnected';
+        };
+
+        socket.onmessage = function(event) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+
+            const timestamp = document.createElement('div');
+            timestamp.className = 'timestamp';
+            timestamp.textContent = new Date().toLocaleTimeString();
+
+            const content = document.createElement('div');
+            content.textContent = event.data;
+
+            messageDiv.appendChild(timestamp);
+            messageDiv.appendChild(content);
+
+            messagesDiv.insertBefore(messageDiv, messagesDiv.firstChild);
+
+            // Keep only last 100 messages
+            while (messagesDiv.children.length > 100) {
+                messagesDiv.removeChild(messagesDiv.lastChild);
+            }
         };
     }
 
-    function appendMessage(message) {
-        const div = document.createElement('div');
-        div.className = 'message';
-
-        const timestamp = document.createElement('span');
-        timestamp.className = 'timestamp';
-        timestamp.textContent = new Date().toLocaleTimeString();
-
-        const content = document.createElement('span');
-        content.textContent = message;
-
-        div.appendChild(timestamp);
-        div.appendChild(content);
-        messagesDiv.appendChild(div);
-
-        // Keep only the latest 1000 messages to prevent memory issues
-        if (messagesDiv.children.length > 1000) {
-            messagesDiv.removeChild(messagesDiv.firstChild);
-        }
-
-        // Auto-scroll to bottom unless user has scrolled up
-        if (messagesDiv.scrollTop + messagesDiv.clientHeight >= messagesDiv.scrollHeight - 100) {
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        }
-    }
-
-    // Start connection when page loads
+    // Initial connection
     connect();
+
+    // Auto-scroll to bottom when new messages arrive
+    messagesDiv.addEventListener('DOMNodeInserted', function(event) {
+        messagesDiv.scrollTop = 0;
+    });
 </script>
 </body>
 </html>

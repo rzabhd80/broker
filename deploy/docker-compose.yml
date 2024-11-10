@@ -16,7 +16,7 @@ services:
   redis2:
     image: redis:latest
     ports:
-      - "6382:6379"
+      - "6383:6379"
     networks:
       - broker-network
 
@@ -50,7 +50,7 @@ services:
     ports:
       - "5002:5002"  # Expose 5002 on localhost for broker2
     environment:
-      - REDIS_HOST=redis
+      - REDIS_HOST=redis1
       - REDIS_PORT=6381
       - NODE_ID=2
       - RAFT_PORT=5002  # Unique internal port for broker2
@@ -70,7 +70,7 @@ services:
     ports:
       - "5003:5003"  # Expose 5003 on localhost for broker3
     environment:
-      - REDIS_HOST=redis
+      - REDIS_HOST=redis2
       - REDIS_PORT=6381
       - NODE_ID=3
       - RAFT_PORT=5003  # Unique internal port for broker3
