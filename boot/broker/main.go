@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
+	"log"
 	"net"
 	"os"
 )
@@ -20,9 +21,23 @@ func main() {
 	if err != nil {
 		logger.Fatalf("cannot create listener: %v", err)
 	}
+	config, err := broker.LoadConfigFromEnv()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Validate configuration
+	if err := config.ValidateConfig(); err != nil {
+		log.Fatalf("Invalid configuration: %v", err)
+	}
+
+	// Initialize broker
+	brokerInstance, err := broker.InitializeBroker(config)
+	if err != nil {
+		log.Fatalf("Failed to initialize broker: %v", err)
+	}
 
 	server := grpc.NewServer()
-	brokerInstance, err := broker.SetupBrokerServer()
 	proto.RegisterBrokerServer(server, brokerInstance)
 	logger.Println("Broker server started")
 	if err := server.Serve(listener); err != nil {

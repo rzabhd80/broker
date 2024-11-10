@@ -7,12 +7,14 @@ services:
       - "6381:6379"
     networks:
       - broker-network
+
   redis1:
     image: redis:latest
     ports:
       - "6382:6379"
     networks:
       - broker-network
+
   redis2:
     image: redis:latest
     ports:
@@ -25,22 +27,25 @@ services:
       context: ..
       dockerfile: Broker.Dockerfile
     ports:
-      - "5001:5001"  # Expose 5001 on localhost for broker1
+      - "5001:5001"  # gRPC port for client communication
+      - "6001:6001"  # Raft transport port
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - NODE_ID=1
-      - RAFT_PORT=5001  # Unique internal port for broker1
-      - TRANSPORT_PORT=8081
-      - SNAPSHOT_PATH="./snapshots"
-      - CLUSTER_NODES=broker1:5001,broker2:5002,broker3:5003
+      - RAFT_PORT=5001         # gRPC port
+      - TRANSPORT_PORT=6001    # Raft internal communication port
+      - SNAPSHOT_PATH=/app/snapshots
+      - NODE_HOST=broker1      # Docker service name
+      # Using internal Raft transport ports in cluster nodes
+      - CLUSTER_NODES=broker1:6001,broker2:6001,broker3:6001
       - INITIATOR=true
+    volumes:
+      - ./snapshots:/app/snapshots
     depends_on:
       - redis
     networks:
       - broker-network
-    env_file:
-      - ../.env
     restart: always
 
   broker2:
@@ -48,68 +53,54 @@ services:
       context: ..
       dockerfile: Broker.Dockerfile
     ports:
-      - "5002:5002"  # Expose 5002 on localhost for broker2
+      - "5002:5002"  # gRPC port for client communication
+      - "6002:6001"  # Raft transport port
     environment:
       - REDIS_HOST=redis1
-      - REDIS_PORT=6381
+      - REDIS_PORT=6379
       - NODE_ID=2
-      - RAFT_PORT=5002  # Unique internal port for broker2
-      - TRANSPORT_PORT=8081
-      - SNAPSHOT_PATH="./snapshots"
-      - CLUSTER_NODES=broker1:5001,broker2:5002,broker3:5003
-      - INITIATOR="false
+      - RAFT_PORT=5002         # gRPC port
+      - TRANSPORT_PORT=6001    # Raft internal communication port
+      - SNAPSHOT_PATH=/app/snapshots
+      - NODE_HOST=broker2      # Docker service name
+      # Using internal Raft transport ports in cluster nodes
+      - CLUSTER_NODES=broker1:6001,broker2:6001,broker3:6001
+      - INITIATOR=false
+    volumes:
+      - ./snapshots:/app/snapshots
     depends_on:
-      - redis
+      - redis1
+      - broker1
     networks:
       - broker-network
+    restart: always
 
   broker3:
     build:
       context: ..
       dockerfile: Broker.Dockerfile
     ports:
-      - "5003:5003"  # Expose 5003 on localhost for broker3
+      - "5003:5003"  # gRPC port for client communication
+      - "6003:6001"  # Raft transport port
     environment:
       - REDIS_HOST=redis2
-      - REDIS_PORT=6381
+      - REDIS_PORT=6379
       - NODE_ID=3
-      - RAFT_PORT=5003  # Unique internal port for broker3
-      - TRANSPORT_PORT=8081
-      - SNAPSHOT_PATH="./snapshots"
-      - CLUSTER_NODES=broker1:5001,broker2:5002,broker3:5003
+      - RAFT_PORT=5003         # gRPC port
+      - TRANSPORT_PORT=6001    # Raft internal communication port
+      - SNAPSHOT_PATH=/app/snapshots
+      - NODE_HOST=broker3      # Docker service name
+      # Using internal Raft transport ports in cluster nodes
+      - CLUSTER_NODES=broker1:6001,broker2:6001,broker3:6001
       - INITIATOR=false
+    volumes:
+      - ./snapshots:/app/snapshots
     depends_on:
-      - redis
-    networks:
-      - broker-network
-    env_file:
-      - ../.env
-
-  publisher:
-    build:
-      context: ..
-      dockerfile: Publisher.Dockerfile
-    environment:
-      - KnownHosts=broker1:5001  # Updated internal ports for each broker
-    depends_on:
+      - redis2
       - broker1
-#      - broker2
-#      - broker3
     networks:
       - broker-network
-
-  subscriber:
-    build:
-      context: ..
-      dockerfile: Subscriber.Dockerfile
-    environment:
-      - KnownHosts=broker1:5001 # Updated internal ports for each broker
-    depends_on:
-      - broker1
-#      - broker2
-#      - broker3
-    networks:
-      - broker-network
+    restart: always
 
 networks:
   broker-network:

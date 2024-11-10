@@ -15,11 +15,37 @@ import (
 	"github.com/hashicorp/raft"
 	"github.com/sirupsen/logrus"
 	"log"
+	"os"
 	"sync"
 	"time"
 )
 
-var ServerInstance *BrokerServer
+type InitConfig struct {
+	RedisHost     string
+	RedisPort     string
+	NodeID        string
+	RaftPort      string
+	TransportPort string
+	SnapshotPath  string
+	NodeHost      string
+	ClusterNodes  string
+	IsInitiator   bool
+}
+
+// LoadConfigFromEnv loads configuration from environment variables
+func LoadConfigFromEnv() (*InitConfig, error) {
+	return &InitConfig{
+		RedisHost:     os.Getenv("REDIS_HOST"),
+		RedisPort:     os.Getenv("REDIS_PORT"),
+		NodeID:        os.Getenv("NODE_ID"),
+		RaftPort:      os.Getenv("RAFT_PORT"),
+		TransportPort: os.Getenv("TRANSPORT_PORT"),
+		SnapshotPath:  os.Getenv("SNAPSHOT_PATH"),
+		NodeHost:      os.Getenv("NODE_HOST"),
+		ClusterNodes:  os.Getenv("CLUSTER_NODES"),
+		IsInitiator:   os.Getenv("INITIATOR") == "true",
+	}, nil
+}
 
 type BrokerServer struct {
 	proto.UnimplementedBrokerServer
@@ -38,75 +64,292 @@ func (broker *BrokerServer) GetRedisClient() *redis.Client {
 	return broker.RedisClient
 }
 
-func SetupBrokerServer() (*BrokerServer, error) {
-	if ServerInstance != nil {
-		return nil, errors.New("Broker Server Already Instantiated")
-	}
-	broker := &BrokerServer{
-		EnvConfig: &env.DevelopmentBrokerConfig{},
-		fsm:       FsmMachine{Messages: make(map[string][]models.Message)},
-		mutex:     sync.RWMutex{},
-	}
+var (
+	ServerInstance *BrokerServer
+	initOnce       sync.Once
+	initErr        error
+)
 
-	//raftInstance, snapshot, err := broker.SetupRaft()
-	//if err != nil {
-	//	logrus.Println("broker server couldnt be started")
-	//	return nil, err
-	//}
-	//broker.messageStore, err = dbms.InitRAM(broker)
-	//
-	//if err != nil {
-	//	logrus.Println("mem db server couldnt be started")
-	//	panic("couldnt set up db")
-	//}
-	//broker.Raft = raftInstance
-	//broker.SnapShotStore = snapshot
-	redisClient, err := redisService.InitRedis()
-	fmt.Printf("redis client %s", redisClient)
-	broker.RedisClient = redisClient
-	if err != nil {
-		fmt.Printf("couldnt set yp redis client")
+// GetBrokerServer provides safe access to the broker instance
+func GetBrokerServer() (*BrokerServer, error) {
+	if ServerInstance == nil {
+		return nil, errors.New("broker server not initialized - call SetupBrokerServer first")
 	}
-	dbmsInstance, err := dbms.InitRAM(broker)
-	broker.dbms = dbmsInstance
-	log.Printf("redis ram storage initiated %s", broker.dbms)
-	ServerInstance = broker
-	return broker, nil
+	return ServerInstance, nil
+}
+
+// SetupBrokerServer now uses sync.Once to ensure single initialization
+func SetupBrokerServer() (*BrokerServer, error) {
+	initOnce.Do(func() {
+		if ServerInstance != nil {
+			initErr = errors.New("broker server already instantiated")
+			return
+		}
+
+		broker := &BrokerServer{
+			EnvConfig: &env.DevelopmentBrokerConfig{
+				TransportPort: os.Getenv("TRANSPORT_PORT"),
+				SnapShotPath:  os.Getenv("SNAPSHOT_PATH"),
+			},
+			fsm: FsmMachine{
+				Messages: make(map[string][]models.Message),
+				rwMutex:  sync.RWMutex{},
+			},
+			mutex: sync.RWMutex{},
+		}
+
+		// Setup Raft cluster
+		raftInstance, snapshot, err := broker.SetupRaft()
+		if err != nil {
+			initErr = fmt.Errorf("failed to setup Raft: %v", err)
+			return
+		}
+		broker.Raft = raftInstance
+		broker.SnapShotStore = snapshot
+
+		// Initialize Redis client
+		redisHost := os.Getenv("REDIS_HOST")
+		redisPort := os.Getenv("REDIS_PORT")
+		if redisHost == "" || redisPort == "" {
+			initErr = fmt.Errorf("REDIS_HOST and REDIS_PORT must be set")
+			return
+		}
+
+		redisClient, err := redisService.InitRedis()
+		if err != nil {
+			initErr = fmt.Errorf("failed to init Redis: %v", err)
+			return
+		}
+		broker.RedisClient = redisClient
+
+		// Initialize in-memory database
+		dbmsInstance, err := dbms.InitRAM(broker)
+		if err != nil {
+			initErr = fmt.Errorf("failed to init RAM storage: %v", err)
+			return
+		}
+		broker.dbms = dbmsInstance
+
+		ServerInstance = broker
+
+		nodeID := os.Getenv("NODE_ID")
+		logrus.Infof("Broker server initialized successfully on node %s", nodeID)
+	})
+
+	return ServerInstance, initErr
+}
+
+func InitializeBroker(config *InitConfig) (*BrokerServer, error) {
+	var initWg sync.WaitGroup
+	var initErr error
+	initWg.Add(1)
+
+	go func() {
+		defer initWg.Done()
+
+		// Initialize the broker server
+		broker, err := SetupBrokerServer()
+		if err != nil {
+			initErr = fmt.Errorf("failed to setup broker server: %v", err)
+			return
+		}
+
+		// Wait for Raft cluster to stabilize
+		if config.IsInitiator {
+			log.Printf("Node %s is the initiator, waiting for cluster formation", config.NodeID)
+			time.Sleep(5 * time.Second) // Give time for other nodes to start
+
+			// Wait for leadership
+			timeout := time.After(30 * time.Second)
+			for {
+				if broker.Raft.State() == raft.Leader {
+					log.Printf("Node %s became leader", config.NodeID)
+					break
+				}
+				select {
+				case <-timeout:
+					initErr = fmt.Errorf("timeout waiting for leadership")
+					return
+				case <-time.After(1 * time.Second):
+					continue
+				}
+			}
+		} else {
+			// Non-initiator nodes should wait to join the cluster
+			log.Printf("Node %s waiting to join cluster", config.NodeID)
+			time.Sleep(10 * time.Second) // Give more time for initiator to set up
+		}
+
+		// Verify Redis connection
+		_, err = broker.RedisClient.Ping(context.Background()).Result()
+		if err != nil {
+			initErr = fmt.Errorf("redis connection failed: %v", err)
+			return
+		}
+
+		log.Printf("Node %s initialization complete", config.NodeID)
+	}()
+
+	// Wait for initialization with timeout
+	done := make(chan struct{})
+	go func() {
+		initWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if initErr != nil {
+			return nil, initErr
+		}
+		return ServerInstance, nil
+	case <-time.After(45 * time.Second):
+		return nil, fmt.Errorf("initialization timeout")
+	}
+}
+
+// ValidateConfig checks if all required configuration is present
+func (c *InitConfig) ValidateConfig() error {
+	if c.RedisHost == "" || c.RedisPort == "" {
+		return fmt.Errorf("redis configuration missing")
+	}
+	if c.NodeID == "" {
+		return fmt.Errorf("NODE_ID not set")
+	}
+	if c.TransportPort == "" {
+		return fmt.Errorf("TRANSPORT_PORT not set")
+	}
+	if c.SnapshotPath == "" {
+		return fmt.Errorf("SNAPSHOT_PATH not set")
+	}
+	return nil
 }
 
 func (broker *BrokerServer) Publish(ctx context.Context, request *proto.PublishRequest) (*proto.PublishResponse, error) {
-	log.Printf("publishing message")
-	msg := models.Message{
-		Id:         0,
-		Body:       string(request.Body),
-		Expiration: time.Duration(request.ExpirationSeconds),
+	// Input validation
+	if request == nil {
+		logrus.Error("Publish request is nil")
+		return nil, fmt.Errorf("invalid request: request cannot be nil")
 	}
-	messageId, err := redisService.StoreMessage(*broker.RedisClient, msg, request.Subject)
-	fmt.Println("message saved")
-	var errorFound bool = false
+	if len(request.Subject) == 0 {
+		logrus.Error("Publish subject is empty")
+		return nil, fmt.Errorf("invalid request: subject cannot be empty")
+	}
+	if len(request.Body) == 0 {
+		logrus.Error("Publish message body is empty")
+		return nil, fmt.Errorf("invalid request: message body cannot be empty")
+	}
+
+	// Get broker instance safely
+	b, err := GetBrokerServer()
 	if err != nil {
-		errorFound = true
+		logrus.Errorf("Failed to get broker instance: %v", err)
+		return nil, fmt.Errorf("broker initialization error: %v", err)
 	}
-	msg.Id = messageId
+
+	// Verify broker components
+	if b.Raft == nil {
+		logrus.Error("Raft instance not initialized")
+		return nil, fmt.Errorf("broker component error: raft instance not initialized")
+	}
+	if b.RedisClient == nil {
+		logrus.Error("Redis client not initialized")
+		return nil, fmt.Errorf("broker component error: redis client not initialized")
+	}
+
+	// Leadership check with detailed logging
+	nodeID := os.Getenv("NODE_ID")
+	if b.Raft.State() != raft.Leader {
+		leader := b.Raft.Leader()
+		logrus.Infof("Node %s cannot publish - not the leader. Current leader: %s", nodeID, leader)
+		if leader == "" {
+			return nil, fmt.Errorf("cluster error: no leader available")
+		}
+		return nil, fmt.Errorf("cluster error: not the leader, current leader is %s", leader)
+	}
+
+	// Create message with expiration
+	msg := models.Message{
+		Id:         0, // Will be set after Raft consensus
+		Body:       string(request.Body),
+		Expiration: time.Duration(request.ExpirationSeconds) * time.Second,
+	}
+
+	// Prepare command for Raft consensus
+	cmd := Command{
+		Op:      "publish",
+		Subject: request.Subject,
+		Message: msg,
+	}
+
+	// Marshal command with error handling
+	cmdBytes, err := json.Marshal(cmd)
+	if err != nil {
+		logrus.Errorf("Failed to marshal publish command: %v", err)
+		return nil, fmt.Errorf("internal error: failed to prepare publish command: %v", err)
+	}
+
+	// Apply to Raft log with timeout
+	logrus.Debugf("Node %s applying command to Raft log", nodeID)
+	applyFuture := b.Raft.Apply(cmdBytes, 500*time.Millisecond)
+	if err := applyFuture.Error(); err != nil {
+		logrus.Errorf("Node %s failed to apply command to Raft log: %v", nodeID, err)
+		return nil, fmt.Errorf("consensus error: failed to replicate message: %v", err)
+	}
+
+	// Handle the response from Raft
+	response := applyFuture.Response()
+	if err, ok := response.(error); ok {
+		logrus.Errorf("Command application failed on node %s: %v", nodeID, err)
+		return nil, fmt.Errorf("consensus error: failed to process message: %v", err)
+	}
+
+	// Extract message ID from response
+	messageId, ok := response.(int64)
+	if !ok {
+		logrus.Error("Invalid message ID type returned from Raft apply")
+		return nil, fmt.Errorf("internal error: invalid message ID type")
+	}
+	msg.Id = int(messageId)
+
+	// Double-check leadership before Redis publish
+	if b.Raft.State() != raft.Leader {
+		logrus.Errorf("Node %s lost leadership during publish operation", nodeID)
+		return nil, fmt.Errorf("consensus error: leadership lost during publish operation")
+	}
+
+	// Marshal message for Redis
 	msgJSON, err := json.Marshal(msg)
 	if err != nil {
-		errorFound = true
+		logrus.Errorf("Failed to marshal message for Redis: %v", err)
+		return nil, fmt.Errorf("internal error: failed to prepare message for storage: %v", err)
 	}
-	fmt.Printf("%sd", msg.Id)
-	fmt.Printf("%s", msg.Id)
-	err = broker.RedisClient.Publish(ctx, request.Subject, msgJSON).Err()
-	fmt.Println("message published")
-	if err != nil {
-		errorFound = true
-	}
-	if errorFound {
-		logrus.Println(fmt.Sprintf("ERROR Publishing Message With ID: %d into Subject: %s", msg.Id,
-			request.Subject))
-		return nil, err
-	}
-	logrus.Println(fmt.Sprintf("Published Message With ID: %d into Subject: %s", msg.Id, request.Subject))
-	return &proto.PublishResponse{Id: int32(msg.Id)}, nil
 
+	// Publish to Redis with context
+	err = b.RedisClient.Publish(ctx, request.Subject, msgJSON).Err()
+	if err != nil {
+		logrus.Errorf("Failed to publish message to Redis: %v", err)
+		return nil, fmt.Errorf("storage error: failed to publish message: %v", err)
+	}
+
+	// Set message expiration in Redis if specified
+	if request.ExpirationSeconds > 0 {
+		key := fmt.Sprintf("message:%s:%d", request.Subject, messageId)
+		err = b.RedisClient.Set(ctx, key, msgJSON, time.Duration(request.ExpirationSeconds)*time.Second).Err()
+		if err != nil {
+			logrus.Errorf("Failed to set message expiration in Redis: %v", err)
+			// Don't return error here as message is already published
+			// Just log the error and continue
+		}
+	}
+
+	logrus.Infof("Successfully published message %d to subject %s by leader node %s",
+		messageId, request.Subject, nodeID)
+
+	// Return success response
+	return &proto.PublishResponse{
+		Id: int32(messageId),
+	}, nil
 }
 func (broker *BrokerServer) Subscribe(request *proto.SubscribeRequest,
 	subscribeServer proto.Broker_SubscribeServer) error {

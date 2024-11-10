@@ -5,65 +5,128 @@ import (
 	"fmt"
 	"github.com/hashicorp/raft"
 	"log"
+	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 func (broker *BrokerServer) SetupRaft() (*raft.Raft, raft.SnapshotStore, error) {
-	log.Printf("raft creation")
+	log.Printf("Starting Raft setup for node %s", os.Getenv("NODE_ID"))
+
+	// Create stores
 	logs := raft.NewInmemStore()
 	stable := raft.NewInmemStore()
-	snapshots, err := raft.NewFileSnapshotStore(broker.EnvConfig.SnapShotPath, 2, os.Stderr)
-	config := raft.DefaultConfig()
-	peerAddress := broker.EnvConfig.ClusterNodes
-	config.LocalID = raft.ServerID(os.Getenv("NODE_ID"))
 
-	transportAddr := fmt.Sprintf("127.0.0.1:%s", broker.EnvConfig.TransportPort)
-	transport, err := raft.NewTCPTransport(transportAddr, nil, 3, 10*time.Second, os.Stderr)
+	// Ensure snapshot directory exists
+	if err := os.MkdirAll(broker.EnvConfig.SnapShotPath, 0755); err != nil {
+		return nil, nil, fmt.Errorf("failed to create snapshot directory: %v", err)
+	}
+
+	snapshots, err := raft.NewFileSnapshotStore(broker.EnvConfig.SnapShotPath, 2, os.Stderr)
 	if err != nil {
-		fmt.Printf("error in raft instance %s", err)
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to create snapshot store: %v", err)
+	}
+
+	// Configure Raft
+	config := raft.DefaultConfig()
+	config.LocalID = raft.ServerID(fmt.Sprintf("node-%s", os.Getenv("NODE_ID")))
+
+	// Get host IP address
+	hostname, err := os.Hostname()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get hostname: %v", err)
+	}
+
+	addrs, err := net.LookupHost(hostname)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to lookup host: %v", err)
+	}
+
+	// Use the first non-loopback IPv4 address
+	var hostIP string
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip.To4() != nil && !ip.IsLoopback() {
+			hostIP = ip.String()
+			break
+		}
+	}
+
+	if hostIP == "" {
+		return nil, nil, fmt.Errorf("no suitable IP address found")
+	}
+
+	// Setup transport with explicit bind and advertise addresses
+	bindAddr := fmt.Sprintf("0.0.0.0:%s", broker.EnvConfig.TransportPort)
+	advertiseAddr := fmt.Sprintf("%s:%s", hostIP, broker.EnvConfig.TransportPort)
+
+	// Create TCP transport with explicit advertise address
+	addr, err := net.ResolveTCPAddr("tcp", advertiseAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve advertise address: %v", err)
+	}
+
+	transport, err := raft.NewTCPTransport(
+		bindAddr,
+		addr, // Explicit advertise address
+		3,    // Max pool size
+		10*time.Second,
+		os.Stderr,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create transport: %v", err)
 	}
 
 	r, err := raft.NewRaft(config, &broker.fsm, logs, stable, snapshots, transport)
 	if err != nil {
-		log.Printf("raft creation failed %s", err)
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to create raft: %v", err)
 	}
-	log.Println("we got a new raft")
-	log.Println(broker.EnvConfig.Initiator)
-	if helpers.IsInitiator(os.Getenv("INITIATOR")) == true {
-		log.Printf("node is initiator")
-		future := r.BootstrapCluster(raft.Configuration{
-			Servers: []raft.Server{
-				{
-					ID:      raft.ServerID(broker.EnvConfig.NodeId),
-					Address: raft.ServerAddress(transportAddr),
-				},
+
+	// Handle cluster configuration
+	if helpers.IsInitiator(os.Getenv("INITIATOR")) {
+		log.Printf("Configuring initiator node %s", config.LocalID)
+
+		// Bootstrap configuration
+		servers := []raft.Server{
+			{
+				ID:      config.LocalID,
+				Address: raft.ServerAddress(advertiseAddr),
 			},
-		})
-		if err := future.Error(); err != nil {
-			fmt.Printf("future error %s", err)
-			return nil, nil, err
 		}
 
-		for _, peerAddr := range peerAddress {
-			nodeID := raft.ServerID(fmt.Sprintf("node-%s", peerAddr))
-			log.Println("adding voters")
-			future := r.AddVoter(nodeID, raft.ServerAddress(peerAddr), 0, 0)
-			log.Printf("future %s")
-			if future.Error() != nil {
-				fmt.Printf("future eror %s", err)
-				return nil, nil, future.Error()
+		// Add other nodes to the configuration
+		clusterNodes := strings.Split(os.Getenv("CLUSTER_NODES"), ",")
+		for i, node := range clusterNodes {
+			if strings.TrimSpace(node) == "" {
+				continue
 			}
+
+			// Skip if this is our own node address
+			if strings.Contains(node, fmt.Sprintf("broker%s", broker.EnvConfig.NodeId)) {
+				continue
+			}
+
+			// Parse node number from the broker name (e.g., "broker1" -> "1")
+			nodeNum := i + 1
+			nodeID := fmt.Sprintf("node-%d", nodeNum)
+
+			// Add other nodes
+			servers = append(servers, raft.Server{
+				ID:      raft.ServerID(nodeID),
+				Address: raft.ServerAddress(node),
+			})
 		}
-	} else {
-		log.Printf("node is follower")
-		future := r.AddVoter(raft.ServerID(broker.EnvConfig.NodeId), raft.ServerAddress("0.0.0.0"), 0, 0)
-		if future.Error() != nil {
-			fmt.Printf("couldnt add voter%s", err)
-			return nil, nil, future.Error()
+
+		// Bootstrap with all servers
+		cfg := raft.Configuration{Servers: servers}
+		future := r.BootstrapCluster(cfg)
+		if err := future.Error(); err != nil {
+			return nil, nil, fmt.Errorf("failed to bootstrap cluster: %v", err)
 		}
+
+		log.Printf("Successfully bootstrapped cluster with %d nodes", len(servers))
 	}
+
 	return r, snapshots, nil
 }
