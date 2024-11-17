@@ -18,7 +18,7 @@ func main() {
 		logger.Fatalf("Could Not Parse Env")
 	}
 	fmt.Printf("%s", clientEnv.KnownHosts)
-	var hosts = []string{"localhost:5001"}
+	var hosts = []string{"localhost:5003"}
 	fmt.Printf("%s", hosts)
 	publisher.RunClientMassiveMessage(hosts)
 }

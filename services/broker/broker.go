@@ -260,7 +260,7 @@ func (broker *BrokerServer) Publish(ctx context.Context, request *proto.PublishR
 	// Leadership check with detailed logging
 	nodeID := os.Getenv("NODE_ID")
 	if b.Raft.State() != raft.Leader {
-		leader := b.Raft.Leader()
+		leader, _ := b.Raft.LeaderWithID()
 		logrus.Infof("Node %s cannot publish - not the leader. Current leader: %s", nodeID, leader)
 		if leader == "" {
 			return nil, fmt.Errorf("cluster error: no leader available")
@@ -305,7 +305,7 @@ func (broker *BrokerServer) Publish(ctx context.Context, request *proto.PublishR
 	}
 
 	// Extract message ID from response
-	messageId, ok := response.(int64)
+	messageId, ok := response.(int)
 	if !ok {
 		logrus.Error("Invalid message ID type returned from Raft apply")
 		return nil, fmt.Errorf("internal error: invalid message ID type")

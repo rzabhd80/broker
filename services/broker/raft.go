@@ -30,7 +30,8 @@ func (broker *BrokerServer) SetupRaft() (*raft.Raft, raft.SnapshotStore, error) 
 
 	// Configure Raft
 	config := raft.DefaultConfig()
-	config.LocalID = raft.ServerID(fmt.Sprintf("node-%s", os.Getenv("NODE_ID")))
+	localNodeID := fmt.Sprintf("node-%s", os.Getenv("NODE_ID"))
+	config.LocalID = raft.ServerID(localNodeID)
 
 	// Get host IP address
 	hostname, err := os.Hostname()
@@ -43,7 +44,6 @@ func (broker *BrokerServer) SetupRaft() (*raft.Raft, raft.SnapshotStore, error) 
 		return nil, nil, fmt.Errorf("failed to lookup host: %v", err)
 	}
 
-	// Use the first non-loopback IPv4 address
 	var hostIP string
 	for _, addr := range addrs {
 		ip := net.ParseIP(addr)
@@ -87,35 +87,75 @@ func (broker *BrokerServer) SetupRaft() (*raft.Raft, raft.SnapshotStore, error) 
 	if helpers.IsInitiator(os.Getenv("INITIATOR")) {
 		log.Printf("Configuring initiator node %s", config.LocalID)
 
-		// Bootstrap configuration
-		servers := []raft.Server{
-			{
-				ID:      config.LocalID,
-				Address: raft.ServerAddress(advertiseAddr),
-			},
+		// Use a map to prevent duplicate node IDs
+		serverMap := make(map[string]raft.Server)
+
+		// Add the current node first
+		serverMap[string(config.LocalID)] = raft.Server{
+			ID:      config.LocalID,
+			Address: raft.ServerAddress(advertiseAddr),
 		}
 
 		// Add other nodes to the configuration
 		clusterNodes := strings.Split(os.Getenv("CLUSTER_NODES"), ",")
-		for i, node := range clusterNodes {
-			if strings.TrimSpace(node) == "" {
+		log.Printf("Processing cluster nodes configuration: %v", clusterNodes)
+
+		for _, node := range clusterNodes {
+			node = strings.TrimSpace(node)
+			if node == "" {
 				continue
 			}
 
-			// Skip if this is our own node address
-			if strings.Contains(node, fmt.Sprintf("broker%s", broker.EnvConfig.NodeId)) {
+			host, _, _ := strings.Cut(node, ":")
+			if host == fmt.Sprintf("broker%s", broker.EnvConfig.NodeId) {
+				log.Printf("Skipping own node: %s", node)
 				continue
 			}
 
-			// Parse node number from the broker name (e.g., "broker1" -> "1")
-			nodeNum := i + 1
-			nodeID := fmt.Sprintf("node-%d", nodeNum)
+			// Extract node number from the broker address (e.g., "broker2:6001" -> "2")
+			parts := strings.Split(node, ":")
+			if len(parts) != 2 {
+				log.Printf("Warning: Invalid node address format: %s", node)
+				continue
+			}
 
-			// Add other nodes
-			servers = append(servers, raft.Server{
+			brokerName := parts[0]
+			nodeNum := strings.TrimPrefix(brokerName, "broker")
+
+			// Validate node number
+			if nodeNum == "" {
+				log.Printf("Warning: Could not extract node number from: %s", brokerName)
+				continue
+			}
+
+			nodeID := fmt.Sprintf("node-%s", nodeNum)
+
+			// Check if this node ID already exists
+			if _, exists := serverMap[nodeID]; exists {
+				log.Printf("Warning: Duplicate node ID detected: %s. Skipping.", nodeID)
+				continue
+			}
+
+			log.Printf("Adding node to configuration: ID=%s, Address=%s", nodeID, node)
+
+			// Add to the map
+			serverMap[nodeID] = raft.Server{
 				ID:      raft.ServerID(nodeID),
 				Address: raft.ServerAddress(node),
-			})
+			}
+		}
+
+		// Convert map to slice for final configuration
+		servers := make([]raft.Server, 0, len(serverMap))
+		for _, server := range serverMap {
+			servers = append(servers, server)
+		}
+
+		log.Printf("Final server configuration: %+v", servers)
+
+		// Validate minimum cluster size
+		if len(servers) < 1 {
+			return nil, nil, fmt.Errorf("insufficient number of servers for cluster configuration")
 		}
 
 		// Bootstrap with all servers
