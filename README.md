@@ -1,4 +1,4 @@
-# A Fault Tolenrat Message Broker using Raft Algorithm
+# A Fault Tolerant Message Broker using Raft Algorithm
 
 
 ## Overview
